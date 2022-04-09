@@ -1,0 +1,160 @@
+---
+title: "Winter_project"
+author: "Oxana Kolpakova"
+date: "06 04 2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+Load the necessary libraries. 
+```{r message=FALSE, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(caret)
+library(factoextra)
+library(psych)
+library(vegan)
+library(caTools)
+library(skimr)
+library(zoo)
+library(lsr)
+```
+Import data file
+```{r}
+micedata <- read.csv ("C:/Users/1/Desktop/Data_Cortex_Nuclear.csv", sep =";", header = T, na.strings = c(" ", "NA"))
+```
+Data correction.
+```{r message=FALSE, include=FALSE}
+head(micedata)
+str(micedata)
+
+#Change protein level colunns  to numeric and 
+#"Genotype", "Treatment", "Behavior", "class" column to factor 
+
+micedata[, c(5, 6,9,11,19,25,26,33,35,37,47,64,65,67,68,78)] <- sapply(micedata[, c(5, 6,9,11,19,25,26,33,35, 37, 47,64,65,67,68,78)], as.numeric)
+micedata[, c(79:82)] <- lapply(micedata[, c(79:82)], factor)
+
+#change strange name to normal
+names(micedata)[names(micedata) == 'п.їMouseID'] <- 'MouseID'
+str(micedata)  
+```
+1. Data description.
+
+-72 mice were used in the experiment.
+-The data contains: expression level of 77 proteins, 2 Genotypes, 2 Treatments, 2 Behavior, 8 class.
+-The class data is balanced.
+-Data for 23 proteins are complete without NA, for 5 proteins about 15% is lost, for the rest about 5% is lost 
+```{r}
+str(micedata)
+skim(micedata)  
+#  balance  of class
+prop.table(table(micedata$class))
+```
+2. Are there differences in the level of BDNF_N production depending on the class in the experiment?
+ANOVA analysis of variance showed that the expression level of BDNF_N was class dependent, p-value < 0.001. With the help of the TukeyHSD test, we found out which classes there are differences between. Effect Size eta-Squared = 0.110
+The expression level of BDNF_N differs significantly for the classes:
+c-SC-m vs. c-CS-m
+c-SC-m vs. c-CS-s
+t-SC-s vs. -c-SC-m
+t-CS-s vs. c-CS-s
+t-CS-s vs. c-CS-m
+t-SC-m vs. c-SC-m
+t-CS-m vs. c-CS-s
+c-SC-s vs. c-CS-s
+t-CS-m vs. c-CS-m
+c-SC-s vs. c-CS-m
+c-SC-s vs. c-SC-m
+t-CS-m vs. c-SC-m
+t-SC-m vs. c-CS-s
+t-SC-s vs. t-CS-s
+t-SC-m vs.c-CS-m
+```{r message=TRUE}
+#replece NA to column mean
+micedata_NA <- replace(micedata, TRUE, lapply(micedata, na.aggregate))
+
+fit <- aov(BDNF_N ~ class, data=micedata_NA) 
+summary(fit)
+
+#differences between classes
+TukeyHSD(fit)
+
+#Effect Size eta-Squared = 0.110
+etaSquared(fit, anova = TRUE)
+
+means <- tapply(micedata_NA$BDNF_N, micedata_NA$class, mean)
+sd <- tapply(micedata_NA$BDNF_N, micedata_NA$class, sd)
+class <- c("c-CS-m", "c-CS-s", "c-SC-m", "c-SC-s", "t-CS-m", "t-CS-s", "t-SC-m", "t-SC-s")
+plot_data <- data.frame(means, sd, class) 
+
+plot_data
+
+ggplot(plot_data, aes(x=class, y=means)) + 
+    geom_bar(stat="identity", width=.4, fill="gold") +
+    geom_errorbar(aes(ymin=means-sd, ymax=means+sd), width=.2) +
+    theme_bw()
+```
+
+3. Build a linear model for predicting  of the ERBB4_N  expression level based on data on other proteins in the experiment. 
+
+Prepare data for lm analysis
+```{r message=FALSE}
+#Prepare data for analysis
+
+#Remove columns non containing protein levels and convert to matrix.
+proteins <- as.matrix(micedata[,c(-1, -79:-82)])
+
+# z-score data
+proteins.norm <- apply(proteins, 2, function(x){
+  (x-mean(x, na.rm = T))/diff(range(x, na.rm = T))})
+
+# Substitute NAs with mean values
+proteins.norm <- apply(proteins.norm, 2, function(x){
+  x[is.na(x)] <- mean(x, na.rm = TRUE)
+  x
+  })
+
+#Divide data into training and test samples.
+
+set.seed(101) 
+# create a vector with randomly selected observation numbers 
+tr.index = sample(1:nrow(proteins.norm), nrow(proteins.norm)*0.8) 
+ 
+#form a training sample,80%
+trSet = proteins.norm[tr.index, ]
+#form a control sample, 20%
+testSet = proteins.norm[-tr.index, ]
+
+trSet1 <- as.data.frame(trSet, row.names = NULL, optional = FALSE)
+testSet1 <- as.data.frame(testSet, row.names = NULL, optional = FALSE)
+```
+Make a linear model that predicts the ERBB4_N expression level by  all available predictors, Adjusted R-squared=0.8028873, the model is not bad. This is also visible on the plots.
+
+```{r message=TRUE}
+
+model <- lm(ERBB4_N ~ ., data=trSet1)
+#summmary(model)
+summary(model)
+summary(model)$adj.r.squared
+
+result <- predict(model, newdata = testSet1)
+result
+
+par(mfrow = c(2, 2))
+plot(model)
+
+```
+4. Run and visualise the result of PCA. 8 PCs explain 78% of variance
+```{r message=TRUE}
+pca <- prcomp(proteins.norm)
+summary(pca)#  8 PCs explain 78% of variance
+
+fviz_eig(pca)
+ 
+screeplot(pca, type = "lines", bstick = TRUE) # it is necessary to leave 8PCs 
+
+fviz_pca_ind(pca, col.ind = micedata$Behavior, geom = "point", pch = 20) +
+  geom_point(size=2, aes(col = micedata$Behavior)) 
+
+fviz_pca_var(pca, col.var = "contrib")
+```
+
